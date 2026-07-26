@@ -102,7 +102,7 @@ def build_rag_chain():
     )
     
     llm = ChatOpenAI(
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         temperature=0,
         api_key=OPENAI_API_KEY,
         base_url="https://api.deepseek.com/v1",
@@ -262,10 +262,11 @@ if __name__ == "__main__":
     print("=" * 60)
     print("按 Ctrl+C 停止服务")
     print("=" * 60)
-    
+
     uvicorn.run(
         app, 
         host="0.0.0.0", 
         port=8000,
         log_level="info"
     )
+

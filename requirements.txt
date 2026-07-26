@@ -8,3 +8,5 @@ langchain-openai
 faiss-cpu
 sentence-transformers
 torch
+streamlit
+requests
