@@ -34,38 +34,31 @@ print("=" * 60)
 print("正在启动 RAG 服务...")
 print("=" * 60)
 
-def init_policy():
-    os.makedirs("data", exist_ok=True)
-    policy_file = "data/policy.txt"
-    if not os.path.exists(policy_file):
-        with open(policy_file, "w", encoding="utf-8") as f:
-            f.write("""公司年假政策（2026年）：
-
-一、年假计算标准
-1. 入职满1年但不满3年：每年5天带薪年假
-2. 入职满3年但不满5年：每年10天带薪年假
-3. 入职满5年及以上：每年15天带薪年假
-4. 新员工入职当年，按实际工作月份折算（满1个月算1天）
-
-二、年假使用规则
-1. 年假可以按半天为单位分批次使用
-2. 年假最多顺延5天至下一年度
-3. 顺延的年假需在次年3月31日前使用完毕
-
-三、离职处理
-1. 离职时未休完的年假按日工资3倍补偿
-2. 日工资 = 月基本工资 / 21.75天
-""")
-    return policy_file
+def load_all_documents():
+    """加载 data/ 目录下所有 .txt 文档"""
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    
+    all_docs = []
+    for filename in os.listdir(data_dir):
+        if filename.endswith(".txt"):
+            filepath = os.path.join(data_dir, filename)
+            loader = TextLoader(filepath, encoding="utf-8")
+            docs = loader.load()
+            # 给每个文档块加上来源文件名
+            for doc in docs:
+                doc.metadata["source"] = filename.replace(".txt", "")
+            all_docs.extend(docs)
+            print(f"  加载文档: {filename}")
+    
+    print(f"共加载 {len(all_docs)} 个文档块")
+    return all_docs
 
 # ====== 全局对话记录 ======
 chat_history = []
 
 def build_rag_chain():
-    policy_file = init_policy()
-    
-    loader = TextLoader(policy_file, encoding="utf-8")
-    docs = loader.load()
+    docs = load_all_documents()
     
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
@@ -110,7 +103,7 @@ def build_rag_chain():
     )
     print("LLM初始化完成")
     
-    template = """你是一个专业的人力资源政策助手。请基于以下政策文档回答用户的问题。
+    template = """你是一个专业的企业政策助手。请基于以下政策文档回答用户的问题。
 
 【政策文档】
 {context}
@@ -122,13 +115,18 @@ def build_rag_chain():
 1. 准确引用政策原文
 2. 如果政策中没有相关信息，请诚实告知
 3. 回答要简洁、清晰
+4. 在答案最后注明引用自哪份文档
 
 回答："""
     
     prompt = ChatPromptTemplate.from_template(template)
     
     def format_docs(docs):
-        return "\n\n---\n\n".join([doc.page_content for doc in docs])
+        parts = []
+        for doc in docs:
+            source = doc.metadata.get("source", "未知文档")
+            parts.append(f"[来源：{source}]\n{doc.page_content}")
+        return "\n\n---\n\n".join(parts)
     
     rag_chain = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
