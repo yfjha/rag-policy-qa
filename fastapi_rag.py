@@ -10,13 +10,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.embeddings import Embeddings 
+from langchain_core.runnables import RunnableLambda
 from langchain_core.embeddings import Embeddings
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 from fastapi.responses import StreamingResponse   # 用于返回流式响应
-from typing import AsyncGenerator                 # 类型注解（可选）
 
 # ====== 强制离线 ======
 os.environ['HF_HUB_OFFLINE'] = '1'
@@ -102,7 +102,38 @@ def build_rag_chain():
         timeout=60
     )
     print("LLM初始化完成")
-    
+
+    def generate_queries(question):
+        """把一个问题改写成多个不同问法"""
+        prompt = f"""你是一个助手，请把用户问题改写成3个不同的问法，
+保持原意不变，用词不同。每行一个，不要编号。
+
+用户问题：{question}
+改写："""
+        try:
+            result = llm.invoke(prompt)
+            lines = result.content.strip().split("\n")
+            return [question] + [line.strip() for line in lines if line.strip()]
+        except Exception as e:
+            print(f"问题改写失败，使用原问题: {e}")
+            return [question]
+
+    def multi_query_retrieve(question):
+        all_questions = generate_queries(question)
+        all_docs = []
+        for i in all_questions:
+            all_docs.extend(retriever.invoke(i))
+
+        seen = set()
+        unique = []
+        for doc in all_docs:
+            if doc.page_content not in seen:
+                seen.add(doc.page_content)
+                unique.append(doc)
+        return unique[:4]
+
+
+
     template = """你是一个专业的企业政策助手。请基于以下政策文档回答用户的问题。
 
 【政策文档】
