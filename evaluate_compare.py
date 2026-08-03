@@ -17,30 +17,27 @@ MODEL_NAME ="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.deepseek.com/v1")
 
 # ====== 初始化文档和 Embedding ======
-os.makedirs("data",exist_ok=True)
-policy_file = "data/policy.txt"
-if not os.path.exists(policy_file):
-    with open(policy_file,"w",encoding="utf-8") as f:
-        f.write("""公司年假政策（2026年）：
+def load_all_documents():
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    all_docs = []
+    for filename in os.listdir(data_dir):
+        if filename.endswith(".txt"):
+            filepath = os.path.join(data_dir, filename)
+            loader = TextLoader(filepath, encoding="utf-8")
+            docs = loader.load()
+            # 给每个文档块加上来源文件名
+            for doc in docs:
+                doc.metadata["source"] = filename.replace(".txt", "")
+            all_docs.extend(docs)
+            print(f"  加载文档: {filename}")
+    
+    print(f"共加载 {len(all_docs)} 个文档块")
+    return all_docs
 
-一、年假计算标准
-1. 入职满1年但不满3年：每年5天带薪年假
-2. 入职满3年但不满5年：每年10天带薪年假
-3. 入职满5年及以上：每年15天带薪年假
-4. 新员工入职当年，按实际工作月份折算（满1个月算1天）
+# 调用加载函数
+docs = load_all_documents()
 
-二、年假使用规则
-1. 年假可以按半天为单位分批次使用
-2. 年假最多顺延5天至下一年度
-3. 顺延的年假需在次年3月31日前使用完毕
-
-三、离职处理
-1. 离职时未休完的年假按日工资3倍补偿
-2. 日工资 = 月基本工资 / 21.75天
-""")
-
-loader = TextLoader(policy_file,encoding="utf-8")
-docs = loader.load()
 
 
 spilitter = RecursiveCharacterTextSplitter(
@@ -65,13 +62,18 @@ class MyEmbeddings(Embeddings):
 embeddings = MyEmbeddings(model)
 vector_store = FAISS.from_documents(chunks,embeddings)
 
-# ====== 测试问题（5 个） ======
+# ====== 测试问题（8 个：4 直接 + 4 措辞不匹配） ======
 QUESTIONS = [
+    # 文档里有原词
     "我入职2年，年假多少天？",
-    "年假可以顺延到下一年吗？",
-    "离职时未休完的年假怎么补偿？",
-    "入职3年可以休几天年假？",
-    "年假怎么申请？",
+    "迟到怎么扣钱？",
+    "出差住宿费能报销多少？",
+    "P3级别基本工资多少？",
+    # 文档里有答案，但说法不一样
+    "我周末加班工资怎么算？",
+    "忘记打卡了怎么办？",
+    "出差一天吃饭补贴多少？",
+    "公司帮我交社保吗？",
 ]
 
 def generate_answer(retriever,question):
@@ -98,7 +100,7 @@ def generate_answer(retriever,question):
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
-    return r.choices[0].message.content,context
+    return r.choices[0].message.content,context,docs
 
 # ====== 检测实验 ======
 def eval_faithfulness(answer,context):
@@ -120,8 +122,38 @@ def eval_relevancy(question, answer):
 问题：{question}
 回答：{answer}
 只输出数字（0.0/0.5/1.0），不要其他文字。"""
-    r = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0)
+    r = client.chat.completions.create(
+        model="deepseek-chat", 
+        messages=[{"role": "user", "content": prompt}], 
+        temperature=0)
     return float(r.choices[0].message.content.strip())
+
+
+# ====== 答案关键词表（每个问题的答案长什么样） ======
+HIT_KEYWORDS = {
+    "我入职2年，年假多少天？": ["5天"],          # 答案里有 5天
+    "迟到怎么扣钱？":           ["50元"],
+    "出差住宿费能报销多少？":   ["500", "350"],   # 关键词里放数字
+    "P3级别基本工资多少？":     ["8000"],
+    "我周末加班工资怎么算？":   ["2倍"],
+    "忘记打卡了怎么办？":       ["补卡"],
+    "出差一天吃饭补贴多少？":   ["150", "100"],
+    "公司帮我交社保吗？":       ["五险一金"],
+}
+
+def eval_hit_rate(question,docs):
+    """
+    检索命中率：
+    检查检索到的文档块里是否包含答案关键词
+    返回 1.0（命中）或 0.0（未命中）
+    """
+    keywords = HIT_KEYWORDS.get(question,[])
+    for doc in docs:
+        for kw in keywords:
+            if kw in doc.page_content:
+                return 1.0
+    return 0.0
+        
 
 # ====== 对比实验 ======
 K_VALUES =[1,4,8]
@@ -139,20 +171,23 @@ for k in K_VALUES:
         search_type="similarity", 
         search_kwargs={"k": k}
     )
-    total_f = total_r =0
+    total_f = total_r =total_hit=0
 
     for i,q in enumerate(QUESTIONS):
-        answer,context = generate_answer(retriever,q)
+        answer,context,docs = generate_answer(retriever,q)
+        hit = eval_hit_rate(q,docs)
         f = eval_faithfulness(answer, context)
         r = eval_relevancy(q, answer)
         total_f += f
         total_r += r
+        total_hit +=hit
         print(f"  Q{i+1}: {q[:20]}...  Faith={f:.1f}  Relevance={r:.1f}")
 
 
     avg_f = total_f / len(QUESTIONS)
     avg_r = total_r / len(QUESTIONS)
-    print(f"  >> 平均: Faithfulness={avg_f:.2f}  Relevance={avg_r:.2f}  "f"综合={(avg_f+avg_r)/2:.2f}")
+    avg_hit = total_hit / len(QUESTIONS)
+    print(f"  >> 平均: Faithfulness={avg_f:.2f}  Relevance={avg_r:.2f} Hit Rate={avg_hit:.2f}  "f"综合={(avg_f+avg_r)/2:.2f}")
 
 
 print(f"\n{'=' * 70}")
