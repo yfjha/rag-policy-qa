@@ -103,10 +103,11 @@ def build_rag_chain():
     )
     print("LLM初始化完成")
 
+# ====== 将问题改写为多个不同问法 ======
     def generate_queries(question):
         """把一个问题改写成多个不同问法"""
         prompt = f"""你是一个助手，请把用户问题改写成3个不同的问法，
-保持原意不变，用词不同。每行一个，不要编号。
+用同义词替换关键词。每行一个，不要编号。
 
 用户问题：{question}
 改写："""
@@ -122,7 +123,7 @@ def build_rag_chain():
         all_questions = generate_queries(question)
         all_docs = []
         for i in all_questions:
-            all_docs.extend(retriever.invoke(i))
+            all_docs.extend(retriever.invoke(i)[:2])
 
         seen = set()
         unique = []
@@ -130,7 +131,7 @@ def build_rag_chain():
             if doc.page_content not in seen:
                 seen.add(doc.page_content)
                 unique.append(doc)
-        return unique[:4]
+        return unique
 
 
 
@@ -160,7 +161,7 @@ def build_rag_chain():
         return "\n\n---\n\n".join(parts)
     
     rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        {"context":  RunnableLambda(multi_query_retrieve)| format_docs, "question": RunnablePassthrough()}
         | prompt
         | llm
     )
